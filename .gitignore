@@ -1,0 +1,13 @@
+node_modules/
+logs/
+.env
+posted_cache.json
+
+# Build outputs (if applicable in the future)
+dist/
+build/
+*.tsbuildinfo
+
+# OS generated files
+.DS_Store
+Thumbs.db

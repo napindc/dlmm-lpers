@@ -1,0 +1,23 @@
+{
+  "apps": [
+    {
+      "name": "Elite-Whale-Sniper",
+      "script": "node",
+      "args": "./node_modules/ts-node/dist/bin.js ./top_pools_daily.ts",
+      "cwd": "./",
+      "watch": false,
+      "ignore_watch": [
+        "node_modules",
+        "logs",
+        "cache",
+        "posted_cache.json"
+      ],
+      "autorestart": false,
+      "cron_restart": "0 0 * * *",
+      "max_restarts": 10,
+      "log_file": "./logs/whale-sniper.log",
+      "error_file": "./logs/whale-sniper-error.log",
+      "node_args": "--max-old-space-size=1024"
+    }
+  ]
+}
