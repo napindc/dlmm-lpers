@@ -317,34 +317,9 @@ async function runDailySniper(): Promise<void> {
                                 embeds: [
                                     {
                                         title: `🎯 Top Performing LP: ${pairName}`,
-                                        description: `**Wallet:** \`${owner}\`\n**Pool Category:** ${categoryName}\n**Pool Target:** ${pairName} [${ageStr}]\n**30D Cumulative PnL:** $${cumulativePnl}\n**7D PnL:** $${pnl7d}\n**Daily Average:** $${averageProfit}`,
+                                        description: `**Wallet:** \`${owner}\`\n**Pool Category:** ${categoryName}\n**Pool Target:** ${pairName} [${ageStr}]\n**30D Cumulative PnL:** $${cumulativePnl}\n**7D PnL:** $${pnl7d}\n**Daily Average:** $${averageProfit}\n\n**🔗 Quick Links:**\n⭐ [Follow on LP Agent](https://app.lpagent.io/portfolio?address=${owner})\n🦊 [Follow on Valhalla](https://valhalla.app/wallet/${owner})\n🌊 [View Meteora Pool](https://app.meteora.ag/dlmm/${poolId})`,
                                         color: 16766720,
                                         image: { url: chartImageUrl }
-                                    }
-                                ],
-                                components: [
-                                    {
-                                        type: 1,
-                                        components: [
-                                            {
-                                                type: 2,
-                                                label: "⭐ Follow on LP Agent",
-                                                style: 5,
-                                                url: `https://app.lpagent.io/portfolio/${owner}`
-                                            },
-                                            {
-                                                type: 2,
-                                                label: "🦊 Follow on Valhalla",
-                                                style: 5,
-                                                url: `https://valhalla.app/wallet/${owner}`
-                                            },
-                                            {
-                                                type: 2,
-                                                label: "🌊 View Meteora Pool",
-                                                style: 5,
-                                                url: `https://app.meteora.ag/dlmm/${poolId}`
-                                            }
-                                        ]
                                     }
                                 ]
                             };
