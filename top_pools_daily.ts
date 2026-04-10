@@ -1,12 +1,17 @@
-import * as fs from 'fs';
 const fetch = require('node-fetch');
 import * as dotenv from 'dotenv';
+import Redis from 'ioredis';
 
 dotenv.config();
 
 const API_KEY: string | undefined = process.env.LP_AGENT_API_KEY || 'lpagent_27951b2e59d621bb2b0edea0586300f54cb7a9bad46dc0dc';
 const WEBHOOK_URL: string | undefined = process.env.WEBHOOK_URL;
+const REDIS_URL: string = process.env.REDIS_URL || 'redis://localhost:6379';
 let BASE_URL: string = 'https://api.lpagent.io/open-api/v1';
+
+const redis = new Redis(REDIS_URL);
+const CACHE_PREFIX = 'dlmm:posted:';
+const CACHE_TTL_SECONDS = 3 * 24 * 60 * 60; // 3 days — Redis auto-expires old entries
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -97,12 +102,14 @@ async function runDailySniper(): Promise<void> {
     console.log("🚀 STARTING ADVANCED DAILY POOLS SNIPER (10 RPM OPTIMIZED)");
     console.log("======================================================\n");
 
-    const POSTED_CACHE_FILE = 'posted_cache.json';
-    let postedCache: Record<string, { pnl: string, pool: string, timestamp: number }> = {};
-    if (fs.existsSync(POSTED_CACHE_FILE)) {
-        try { postedCache = JSON.parse(fs.readFileSync(POSTED_CACHE_FILE, 'utf8')); } catch (e) {}
+    // Redis cache helper functions
+    async function getCachedWallet(owner: string): Promise<{ pnl: string, pool: string, timestamp: number } | null> {
+        const raw = await redis.get(`${CACHE_PREFIX}${owner}`);
+        return raw ? JSON.parse(raw) : null;
     }
-    const savePostedCache = () => fs.writeFileSync(POSTED_CACHE_FILE, JSON.stringify(postedCache, null, 2));
+    async function setCachedWallet(owner: string, data: { pnl: string, pool: string, timestamp: number }): Promise<void> {
+        await redis.set(`${CACHE_PREFIX}${owner}`, JSON.stringify(data), 'EX', CACHE_TTL_SECONDS);
+    }
 
     try {
         console.log("0. Probing for active LP Agent API route...");
@@ -209,7 +216,13 @@ async function runDailySniper(): Promise<void> {
                 if (!t1) t1 = pool.token1 ? `${pool.token1.slice(0,4)}..${pool.token1.slice(-4)}` : 'Unknown';
 
                 const pairName = pool.name || `${t0}/${t1}`;
-                const ageStr = `${Math.max(0, Math.floor(pool.ageDays || 0))} Days Old`;
+                const ageMs = (pool.ageDays || 0) * 24 * 60 * 60 * 1000;
+                const ageDays = Math.floor(ageMs / (24 * 60 * 60 * 1000));
+                const ageHours = Math.floor((ageMs % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+                const ageMinutes = Math.floor((ageMs % (60 * 60 * 1000)) / (60 * 1000));
+                const ageStr = ageDays > 0 
+                    ? `${ageDays}d ${ageHours}h` 
+                    : `${ageHours}h ${ageMinutes}m`;
                 
                 console.log(`\n🌊 TARGET POOL: ${pairName} [${ageStr}] (${poolId})`);
                 console.log(`   [⏳] Waiting 6.5s for 10 RPM limit to fetch LPers...`);
@@ -236,7 +249,8 @@ async function runDailySniper(): Promise<void> {
                         console.log(`   [!] Skipped [${owner.slice(0,8)}...] -> Already processed.`);
                         continue;
                     }
-                    if (postedCache[owner] && Date.now() - postedCache[owner].timestamp < 24 * 60 * 60 * 1000) {
+                    const cached = await getCachedWallet(owner);
+                    if (cached && Date.now() - cached.timestamp < 24 * 60 * 60 * 1000) {
                         console.log(`   [!] Skipped [${owner.slice(0,8)}...] -> Already posted to Discord today.`);
                         continue;
                     }
@@ -258,10 +272,9 @@ async function runDailySniper(): Promise<void> {
                                 continue;
                             }
 
-                            if (postedCache[owner] && postedCache[owner].pnl === cumulativePnl) {
+                            if (cached && cached.pnl === cumulativePnl) {
                                 console.log(`   [!] Skipped [${owner.slice(0,8)}...] -> PnL unchanged ($${cumulativePnl}).`);
-                                postedCache[owner].timestamp = Date.now();
-                                savePostedCache();
+                                await setCachedWallet(owner, { ...cached, timestamp: Date.now() });
                                 continue;
                             }
                             
@@ -317,7 +330,7 @@ async function runDailySniper(): Promise<void> {
                                 embeds: [
                                     {
                                         title: `🎯 Top Performing LP: ${pairName}`,
-                                        description: `**Wallet:** \`${owner}\`\n**Pool Category:** ${categoryName}\n**Pool Target:** ${pairName} [${ageStr}]\n**30D Cumulative PnL:** $${cumulativePnl}\n**7D PnL:** $${pnl7d}\n**Daily Average:** $${averageProfit}\n\n**🔗 Quick Links:**\n⭐ [Follow on LP Agent](https://app.lpagent.io/portfolio?address=${owner})\n🦊 [Follow on Valhalla](https://valhalla.app/wallet/${owner})\n🌊 [View Meteora Pool](https://app.meteora.ag/dlmm/${poolId})`,
+                                        description: `**Wallet:** \`${owner}\`\n**Pool Category:** ${categoryName}\n**Pool Target:** ${pairName} [${ageStr}]\n**30D Cumulative PnL:** $${cumulativePnl}\n**7D PnL:** $${pnl7d}\n**Daily Average:** $${averageProfit}\n\n**🔗 Quick Links:**\n⭐ [View on LP Agent](https://app.lpagent.io/portfolio?address=${owner})\n🦊 [Follow on Valhalla](https://valhalla.app/wallet/${owner})\n🌊 [View Meteora Pool](https://app.meteora.ag/dlmm/${poolId})`,
                                         color: 16766720,
                                         image: { url: chartImageUrl }
                                     }
@@ -333,8 +346,7 @@ async function runDailySniper(): Promise<void> {
                                 console.log(`   [✅] Successfully Posted ${pairName} Elite Whale Chart to Discord!`);
                                 poolWhales.push(owner);
                                 seenWallets.add(owner);
-                                postedCache[owner] = { pnl: cumulativePnl, pool: pairName, timestamp: Date.now() };
-                                savePostedCache();
+                                await setCachedWallet(owner, { pnl: cumulativePnl, pool: pairName, timestamp: Date.now() });
                             }
 
                         } else {
@@ -395,6 +407,8 @@ async function runDailySniper(): Promise<void> {
 
     } catch (err: any) {
         console.error("Critical Failure in Daily Sniper:", err.message);
+    } finally {
+        await redis.quit();
     }
 }
 
