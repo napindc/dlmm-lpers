@@ -13,7 +13,38 @@ const redis = new Redis(REDIS_URL);
 const CACHE_PREFIX = 'dlmm:posted:';
 const CACHE_TTL_SECONDS = 3 * 24 * 60 * 60; // 3 days — Redis auto-expires old entries
 
+const SOLANA_RPC_URL: string = 'https://api.mainnet-beta.solana.com';
+const MIN_SOL_BALANCE: number = 5; // Filter out wallets with less than 5 SOL
+
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+
+// Format PnL: absolute value, commas, no decimals, with up/down emoji
+function fmtPnl(value: number): string {
+    const emoji = value >= 0 ? '📈' : '📉';
+    const abs = Math.abs(Math.round(value));
+    const formatted = abs.toLocaleString('en-US');
+    return `${emoji} $${formatted}`;
+}
+
+async function getWalletSolBalance(walletAddress: string): Promise<number> {
+    try {
+        const res = await fetch(SOLANA_RPC_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                jsonrpc: '2.0',
+                id: 1,
+                method: 'getBalance',
+                params: [walletAddress]
+            })
+        });
+        const data: any = await res.json();
+        // Convert lamports to SOL (1 SOL = 1e9 lamports)
+        return (data?.result?.value || 0) / 1e9;
+    } catch (e) {
+        return 0; // On error, treat as 0 balance
+    }
+}
 
 // Global rate limiter to ensure we NEVER burst past 10 RPM (1 request per 6 seconds)
 let lastRequestTime: number = 0;
@@ -182,6 +213,23 @@ async function runDailySniper(): Promise<void> {
             "Top wallets from pools < 3-7 days ago:": {}
         };
 
+        // Collect embeds per category, then flush as a single batched message
+        let pendingEmbeds: any[] = [];
+
+        async function flushEmbeds(categoryName: string) {
+            if (pendingEmbeds.length === 0 || !WEBHOOK_URL) return;
+            await fetch(WEBHOOK_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    content: `**🔍 ${categoryName}**`,
+                    embeds: pendingEmbeds.slice(0, 10) // Discord max is 10
+                })
+            });
+            console.log(`   [✅] Batched ${pendingEmbeds.length} embed(s) for "${categoryName}" into a single message.`);
+            pendingEmbeds = [];
+        }
+
         async function processCategory(targetPools: PoolData[], categoryName: string, summaryKey: string) {
             if (targetPools.length === 0) {
                  console.log(`\n   [!] No Meteora pools were found for "${categoryName}".`);
@@ -245,6 +293,13 @@ async function runDailySniper(): Promise<void> {
                     const owner = lper.owner || lper.address || lper.wallet || lper.user;
                     if (!owner) continue;
 
+                    // Filter out wallets with less than 5 SOL
+                    const solBalance = await getWalletSolBalance(owner);
+                    if (solBalance < MIN_SOL_BALANCE) {
+                        console.log(`   [!] Skipped [${owner.slice(0,8)}...] -> Only ${solBalance.toFixed(2)} SOL (min: ${MIN_SOL_BALANCE}).`);
+                        continue;
+                    }
+
                     if (seenWallets.has(owner)) {
                         console.log(`   [!] Skipped [${owner.slice(0,8)}...] -> Already processed.`);
                         continue;
@@ -282,8 +337,12 @@ async function runDailySniper(): Promise<void> {
                             
                             const labels = days.map((d, i) => `D${i+1}`);
                             const profits = days.map(d => parseFloat((d.sum !== undefined ? d.sum : d.sum_native) as any));
-                            const averageProfit = profits.length > 0 ? (profits.reduce((a, b) => a + b, 0) / profits.length).toFixed(2) : "0.00";
-                            const pnl7d = profits.slice(-7).reduce((a, b) => a + b, 0).toFixed(2);
+                            const averageProfitNum = profits.length > 0 ? (profits.reduce((a, b) => a + b, 0) / profits.length) : 0;
+                            const pnl7dNum = profits.slice(-7).reduce((a, b) => a + b, 0);
+
+                            const fmtCumulativePnl = fmtPnl(parseFloat(cumulativePnl));
+                            const fmtPnl7d = fmtPnl(pnl7dNum);
+                            const fmtAvgProfit = fmtPnl(averageProfitNum);
 
                             const MA_WINDOW = 7;
                             const movingAvg = profits.map((_, i) => {
@@ -315,6 +374,15 @@ async function runDailySniper(): Promise<void> {
                                             borderWidth: 1
                                         }
                                     ]
+                                },
+                                options: {
+                                    scales: {
+                                        y: {
+                                            ticks: {
+                                                callback: (val: number) => '$' + Math.round(val)
+                                            }
+                                        }
+                                    }
                                 }
                             };
 
@@ -326,28 +394,24 @@ async function runDailySniper(): Promise<void> {
                             const qcData: any = await qcRes.json();
                             const chartImageUrl = qcData.url || `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(quickChartObj))}`;
 
-                            const discordPayload = {
-                                embeds: [
-                                    {
-                                        title: `🎯 Top Performing LP: ${pairName}`,
-                                        description: `**Wallet:** \`${owner}\`\n**Pool Category:** ${categoryName}\n**Pool Target:** ${pairName} [${ageStr}]\n**30D Cumulative PnL:** $${cumulativePnl}\n**7D PnL:** $${pnl7d}\n**Daily Average:** $${averageProfit}\n\n**🔗 Quick Links:**\n⭐ [View on LP Agent](https://app.lpagent.io/portfolio?address=${owner})\n🦊 [Follow on Valhalla](https://valhalla.app/wallet/${owner})\n🌊 [View Meteora Pool](https://app.meteora.ag/dlmm/${poolId})`,
-                                        color: 16766720,
-                                        image: { url: chartImageUrl }
-                                    }
-                                ]
-                            };
+                            // Build condensed embed and queue it for batching
+                            pendingEmbeds.push({
+                                title: `🎯 ${pairName} [${ageStr}]`,
+                                url: `https://app.meteora.ag/dlmm/${poolId}`,
+                                description: `👤 [${owner}](https://app.lpagent.io/portfolio?address=${owner})`,
+                                fields: [
+                                    { name: '30D PnL', value: fmtCumulativePnl, inline: true },
+                                    { name: '7D PnL', value: fmtPnl7d, inline: true },
+                                    { name: 'Daily Avg', value: fmtAvgProfit, inline: true }
+                                ],
+                                color: parseFloat(cumulativePnl) >= 1000 ? 5763719 : 16766720,
+                                image: { url: chartImageUrl }
+                            });
 
-                            if (WEBHOOK_URL) {
-                                await fetch(WEBHOOK_URL, {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify(discordPayload)
-                                });
-                                console.log(`   [✅] Successfully Posted ${pairName} Elite Whale Chart to Discord!`);
-                                poolWhales.push(owner);
-                                seenWallets.add(owner);
-                                await setCachedWallet(owner, { pnl: cumulativePnl, pool: pairName, timestamp: Date.now() });
-                            }
+                            poolWhales.push(owner);
+                            seenWallets.add(owner);
+                            await setCachedWallet(owner, { pnl: cumulativePnl, pool: pairName, timestamp: Date.now() });
+                            console.log(`   [✅] Queued embed for ${pairName} whale [${owner.slice(0,8)}...]`);
 
                         } else {
                             console.log(`   [!] Skipped [${owner.slice(0,8)}...] -> No revenue data.`);
@@ -363,47 +427,17 @@ async function runDailySniper(): Promise<void> {
                     fullSummaryData[summaryKey][pairName] = poolWhales;
                 }
             }
+
+            // Flush all collected embeds for this category as ONE message
+            await flushEmbeds(categoryName);
         }
 
         await processCategory(top24h, "Best in Last 24H", "Top wallets from pools < 24 hrs ago:");
         await processCategory(top3to7d, "Best in Last 3-7 Days", "Top wallets from pools < 3-7 days ago:");
 
         console.log(`\n======================================================`);
-        console.log(`Market Sweep Complete. Building Final Text Summary...`);
+        console.log(`Market Sweep Complete.`);
         console.log(`======================================================\n`);
-
-        let summaryStr = "";
-
-        if (Object.keys(fullSummaryData["Top wallets from pools < 24 hrs ago:"]).length > 0) {
-            summaryStr += "**Top wallets from pools < 24 hrs ago:**\n";
-            for (const [poolName, wallets] of Object.entries(fullSummaryData["Top wallets from pools < 24 hrs ago:"])) {
-                summaryStr += `Pool ${poolName}:\n`;
-                for (const w of wallets) {
-                    summaryStr += `${w}\n`;
-                }
-                summaryStr += "\n";
-            }
-        }
-
-        if (Object.keys(fullSummaryData["Top wallets from pools < 3-7 days ago:"]).length > 0) {
-            summaryStr += "**Top wallets from pools < 3-7 days ago:**\n";
-            for (const [poolName, wallets] of Object.entries(fullSummaryData["Top wallets from pools < 3-7 days ago:"])) {
-                summaryStr += `Pool ${poolName}:\n`;
-                for (const w of wallets) {
-                    summaryStr += `${w}\n`;
-                }
-                summaryStr += "\n";
-            }
-        }
-
-        if (summaryStr.length > 0 && WEBHOOK_URL) {
-            await fetch(WEBHOOK_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content: summaryStr.trim() })
-            });
-            console.log(`   [✅] Successfully sent global Text Summary to Discord DMs!`);
-        }
 
     } catch (err: any) {
         console.error("Critical Failure in Daily Sniper:", err.message);
