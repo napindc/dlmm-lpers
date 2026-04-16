@@ -213,21 +213,73 @@ async function runDailySniper(): Promise<void> {
             "Top wallets from pools < 3-7 days ago:": {}
         };
 
-        // Collect embeds per category, then flush as a single batched message
-        let pendingEmbeds: any[] = [];
+        // Collect whale data per category — grouped text + chart files
+        let pendingPools: Map<string, {
+            poolId: string; pairName: string; ageStr: string;
+            whales: { owner: string; pnl: string; pnl7d: string; avg: string; chartUrl: string; chartLabel: string }[];
+        }> = new Map();
 
         async function flushEmbeds(categoryName: string) {
-            if (pendingEmbeds.length === 0 || !WEBHOOK_URL) return;
+            if (pendingPools.size === 0 || !WEBHOOK_URL) return;
+
+            // Build grouped text description
+            const sections: string[] = [];
+            const chartEntries: { label: string; url: string }[] = [];
+
+            for (const [, pool] of pendingPools) {
+                let section = `\n🎯 **[${pool.pairName}](<https://app.meteora.ag/dlmm/${pool.poolId}>)** [${pool.ageStr}]`;
+                for (const w of pool.whales) {
+                    section += `\n└ 👤 [${w.owner}](<https://app.lpagent.io/portfolio?address=${w.owner}>)`;
+                    section += `\n\u2003 30D ${w.pnl}  ·  7D ${w.pnl7d}  ·  30D Avg Daily PnL ${w.avg}`;
+                    chartEntries.push({ label: w.chartLabel, url: w.chartUrl });
+                }
+                sections.push(section);
+            }
+
+            const description = sections.join('\n');
+
+            // Download chart images as file attachments (tiled grid in Discord)
+            const fileBuffers: { name: string; buffer: Buffer }[] = [];
+            for (const chart of chartEntries) {
+                try {
+                    const imgRes = await fetch(chart.url);
+                    const arrBuf = await imgRes.arrayBuffer();
+                    fileBuffers.push({ name: `${chart.label}.png`, buffer: Buffer.from(arrBuf) });
+                } catch(e) {
+                    console.log(`   [!] Failed to download chart for ${chart.label}`);
+                }
+            }
+
+            // Send as multipart with one embed + file attachments
+            const boundary = '----WhaleSniper' + Date.now();
+            const parts: Buffer[] = [];
+
+            const payload = JSON.stringify({
+                content: `**🔍 ${categoryName}**\n${description}`
+            });
+            parts.push(Buffer.from(
+                `--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${payload}\r\n`
+            ));
+
+            for (let i = 0; i < fileBuffers.length; i++) {
+                parts.push(Buffer.from(
+                    `--${boundary}\r\nContent-Disposition: form-data; name="files[${i}]"; filename="${fileBuffers[i].name}"\r\nContent-Type: image/png\r\n\r\n`
+                ));
+                parts.push(fileBuffers[i].buffer);
+                parts.push(Buffer.from('\r\n'));
+            }
+
+            parts.push(Buffer.from(`--${boundary}--\r\n`));
+            const body = Buffer.concat(parts);
+
             await fetch(WEBHOOK_URL, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    content: `**🔍 ${categoryName}**`,
-                    embeds: pendingEmbeds.slice(0, 10) // Discord max is 10
-                })
+                headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+                body: body
             });
-            console.log(`   [✅] Batched ${pendingEmbeds.length} embed(s) for "${categoryName}" into a single message.`);
-            pendingEmbeds = [];
+
+            console.log(`   [✅] Sent message for "${categoryName}" — ${pendingPools.size} pool(s), ${chartEntries.length} chart(s).`);
+            pendingPools = new Map();
         }
 
         async function processCategory(targetPools: PoolData[], categoryName: string, summaryKey: string) {
@@ -336,20 +388,23 @@ async function runDailySniper(): Promise<void> {
                             console.log(`   [🏆] ELITE WHALE CONFIRMED [${owner.slice(0,8)}...] -> 30D PnL: $${cumulativePnl}! Generating QuickChart...`);
                             
                             const labels = days.map((d, i) => `D${i+1}`);
-                            const profits = days.map(d => parseFloat((d.sum !== undefined ? d.sum : d.sum_native) as any));
-                            const averageProfitNum = profits.length > 0 ? (profits.reduce((a, b) => a + b, 0) / profits.length) : 0;
-                            const pnl7dNum = profits.slice(-7).reduce((a, b) => a + b, 0);
+                            const rawProfits = days.map(d => parseFloat((d.sum !== undefined ? d.sum : d.sum_native) as any));
+                            const profits = rawProfits.map(p => Math.round(p)); 
+                            const averageProfitNum = rawProfits.length > 0 ? (rawProfits.reduce((a, b) => a + b, 0) / rawProfits.length) : 0;
+                            const pnl7dNum = rawProfits.slice(-7).reduce((a, b) => a + b, 0);
 
                             const fmtCumulativePnl = fmtPnl(parseFloat(cumulativePnl));
                             const fmtPnl7d = fmtPnl(pnl7dNum);
                             const fmtAvgProfit = fmtPnl(averageProfitNum);
 
                             const MA_WINDOW = 7;
-                            const movingAvg = profits.map((_, i) => {
+                            const movingAvg = rawProfits.map((_, i) => {
                                 const start = Math.max(0, i - MA_WINDOW + 1);
-                                const windowSlice = profits.slice(start, i + 1);
-                                return parseFloat((windowSlice.reduce((a, b) => a + b, 0) / windowSlice.length).toFixed(2));
+                                const windowSlice = rawProfits.slice(start, i + 1);
+                                return Math.round(windowSlice.reduce((a, b) => a + b, 0) / windowSlice.length);
                             });
+
+                            const shortWalletLabel = `${owner.slice(0, 6)}..${owner.slice(-4)}`;
 
                             const quickChartObj = {
                                 type: 'bar',
@@ -358,7 +413,7 @@ async function runDailySniper(): Promise<void> {
                                     datasets: [
                                         {
                                             type: 'line',
-                                            label: '7-Day Moving Average',
+                                            label: '7-Day Moving Avg PnL ($)',
                                             data: movingAvg,
                                             borderColor: 'rgb(255, 206, 86)',
                                             borderWidth: 2,
@@ -376,36 +431,43 @@ async function runDailySniper(): Promise<void> {
                                     ]
                                 },
                                 options: {
+                                    title: {
+                                        display: true,
+                                        text: `${pairName} — ${shortWalletLabel}`,
+                                        fontSize: 14
+                                    },
                                     scales: {
                                         y: {
                                             ticks: {
-                                                callback: (val: number) => '$' + Math.round(val)
+                                                callback: '__CALLBACK__'
                                             }
                                         }
                                     }
                                 }
                             };
 
+                            // QuickChart needs the callback as a raw JS function string, not JSON
+                            const chartString = JSON.stringify(quickChartObj).replace(
+                                '"__CALLBACK__"',
+                                '(val) => "$" + Math.round(val)'
+                            );
+
                             const qcRes = await fetch('https://quickchart.io/chart/create', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ chart: quickChartObj, width: 600, height: 300, backgroundColor: 'white' })
+                                body: JSON.stringify({ chart: chartString, width: 500, height: 200, backgroundColor: 'white' })
                             });
                             const qcData: any = await qcRes.json();
-                            const chartImageUrl = qcData.url || `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(quickChartObj))}`;
+                            const chartImageUrl = qcData.url || `https://quickchart.io/chart?c=${encodeURIComponent(chartString)}`;
 
-                            // Build condensed embed and queue it for batching
-                            pendingEmbeds.push({
-                                title: `🎯 ${pairName} [${ageStr}]`,
-                                url: `https://app.meteora.ag/dlmm/${poolId}`,
-                                description: `👤 [${owner}](https://app.lpagent.io/portfolio?address=${owner})`,
-                                fields: [
-                                    { name: '30D PnL', value: fmtCumulativePnl, inline: true },
-                                    { name: '7D PnL', value: fmtPnl7d, inline: true },
-                                    { name: 'Daily Avg', value: fmtAvgProfit, inline: true }
-                                ],
-                                color: parseFloat(cumulativePnl) >= 1000 ? 5763719 : 16766720,
-                                image: { url: chartImageUrl }
+                            // Queue whale under its pool for grouped output
+                            if (!pendingPools.has(poolId)) {
+                                pendingPools.set(poolId, { poolId, pairName, ageStr, whales: [] });
+                            }
+                            const shortLabel = `${pairName.replace(/[^a-zA-Z0-9]/g, '_')}_${owner.slice(0, 8)}`;
+                            pendingPools.get(poolId)!.whales.push({
+                                owner, pnl: fmtCumulativePnl, pnl7d: fmtPnl7d, avg: fmtAvgProfit,
+                                chartUrl: chartImageUrl, chartLabel: shortLabel
                             });
 
                             poolWhales.push(owner);
