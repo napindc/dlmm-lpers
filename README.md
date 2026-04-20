@@ -106,9 +106,9 @@ Cached wallet entries auto-expire after 3 days — no maintenance needed.
 npx ts-node top_pools_daily.ts
 ```
 
-### Automated daily runs with PM2
+### Automated every-2-day runs with PM2
 
-The included `ecosystem.config.json` is pre-configured to run the script once daily at midnight:
+The included `ecosystem.config.json` is pre-configured to run the script at midnight every 2 days:
 
 ```bash
 # Install PM2 globally (if not already installed)
@@ -128,7 +128,7 @@ pm2 stop Elite-Whale-Sniper
 ```
 
 The PM2 config (`ecosystem.config.json`) includes:
-- **Cron schedule:** `0 0 * * *` (runs at midnight daily)
+- **Cron schedule:** `0 0 */2 * *` (runs at midnight every 2 days)
 - **Auto-restart:** Disabled (runs once per trigger, not continuously)
 - **Log files:** Saved to `./logs/` directory
 
