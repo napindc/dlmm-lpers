@@ -12,8 +12,7 @@
         "cache",
         "posted_cache.json"
       ],
-      "autorestart": false,
-      "cron_restart": "0 0 */2 * *",
+      "autorestart": true,
       "max_restarts": 10,
       "log_file": "./logs/whale-sniper.log",
       "error_file": "./logs/whale-sniper-error.log",

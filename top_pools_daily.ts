@@ -197,9 +197,9 @@ async function runDailySniper(): Promise<void> {
             if (ms > 0 && ms < 10000000000) ms *= 1000;
             let ageDays = (now - ms) / dayMs;
 
-            if (ageDays <= 1.5) {
+            if (ageDays <= 2) {
                 pools24h.push({ ...p, ageDays, originalAgeMs: ms });
-            } else if (ageDays >= 3 && ageDays <= 7.5) {
+            } else {
                 pools3to7d.push({ ...p, ageDays, originalAgeMs: ms });
             }
         }
@@ -209,8 +209,8 @@ async function runDailySniper(): Promise<void> {
         const seenWallets = new Set<string>();
         
         let fullSummaryData: Record<string, Record<string, string[]>> = {
-            "Top wallets from pools < 24 hrs ago:": {},
-            "Top wallets from pools < 3-7 days ago:": {}
+            "Top wallets from pools < 2 days ago:": {},
+            "Top wallets from pools 2+ days ago (by 24h volume):": {}
         };
 
         // Collect whale data per category — grouped text + chart files
@@ -229,7 +229,7 @@ async function runDailySniper(): Promise<void> {
             for (const [, pool] of pendingPools) {
                 let section = `\n🎯 **[${pool.pairName}](<https://app.meteora.ag/dlmm/${pool.poolId}>)** [${pool.ageStr}]`;
                 for (const w of pool.whales) {
-                    section += `\n└ 👤 [${w.owner}](<https://app.lpagent.io/portfolio?address=${w.owner}>)`;
+                    section += `\n└ 👤 ${w.owner}`;
                     section += `\n\u2003 30D ${w.pnl}  ·  7D ${w.pnl7d}  ·  30D Avg Daily PnL ${w.avg}`;
                     chartEntries.push({ label: w.chartLabel, url: w.chartUrl });
                 }
@@ -494,8 +494,18 @@ async function runDailySniper(): Promise<void> {
             await flushEmbeds(categoryName);
         }
 
-        await processCategory(top24h, "Best in Last 24H", "Top wallets from pools < 24 hrs ago:");
-        await processCategory(top3to7d, "Best in Last 3-7 Days", "Top wallets from pools < 3-7 days ago:");
+        if (WEBHOOK_URL) {
+            await fetch(WEBHOOK_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    content: 'Below are profitable Meteora wallets you can copy trade with Valhalla! To begin just type in Discord here "/valhalla start"'
+                })
+            });
+        }
+
+        await processCategory(top24h, "Best in Last 2 Days", "Top wallets from pools < 2 days ago:");
+        await processCategory(top3to7d, "Best Older Pools (2+ Days, Ranked by 24H Volume)", "Top wallets from pools 2+ days ago (by 24h volume):");
 
         console.log(`\n======================================================`);
         console.log(`Market Sweep Complete.`);
@@ -503,9 +513,30 @@ async function runDailySniper(): Promise<void> {
 
     } catch (err: any) {
         console.error("Critical Failure in Daily Sniper:", err.message);
-    } finally {
-        await redis.quit();
     }
 }
 
-runDailySniper();
+function getNextMidnightMs(): number {
+    const next = new Date();
+    next.setDate(next.getDate() + 1);
+    next.setHours(0, 0, 0, 0);
+    return next.getTime();
+}
+
+async function main(): Promise<void> {
+    const nextMidnight = getNextMidnightMs();
+    const hoursUntil = Math.round((nextMidnight - Date.now()) / 3600000);
+    console.log(`🐋 Whale Sniper started. First run at: ${new Date(nextMidnight).toISOString()} (~${hoursUntil}h from now)`);
+    await sleep(nextMidnight - Date.now());
+
+    while (true) {
+        await runDailySniper();
+        console.log("⏰ Next run in 48 hours...");
+        await sleep(48 * 60 * 60 * 1000);
+    }
+}
+
+process.on('SIGTERM', async () => { await redis.quit(); process.exit(0); });
+process.on('SIGINT', async () => { await redis.quit(); process.exit(0); });
+
+main();
