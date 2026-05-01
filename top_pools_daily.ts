@@ -2,6 +2,7 @@ const fetch = require('node-fetch');
 import * as dotenv from 'dotenv';
 import Redis from 'ioredis';
 import { getBannedPoolPairName } from './poolFilters';
+import { MAX_LPERS_TO_SCAN, MAX_POOL_AGE_DAYS, MAX_SURVIVORS_PER_POOL, shouldScanPoolByAge } from './scanRules';
 
 dotenv.config();
 
@@ -207,6 +208,10 @@ async function runDailySniper(): Promise<void> {
             if (ms > 0 && ms < 10000000000) ms *= 1000;
             let ageDays = (now - ms) / dayMs;
 
+            if (!shouldScanPoolByAge(ageDays)) {
+                continue;
+            }
+
             if (ageDays <= 2) {
                 pools24h.push({ ...p, ageDays, originalAgeMs: ms });
             } else {
@@ -220,7 +225,7 @@ async function runDailySniper(): Promise<void> {
         
         let fullSummaryData: Record<string, Record<string, string[]>> = {
             "Top wallets from pools < 2 days ago:": {},
-            "Top wallets from pools 2+ days ago (by 24h volume):": {}
+            "Top wallets from pools 2-300 days old (by 24h volume):": {}
         };
 
         // Collect whale data per category — grouped text + chart files
@@ -349,8 +354,8 @@ async function runDailySniper(): Promise<void> {
                 const lpers: LperData[] = lpersRes.data || lpersRes;
                 let poolWhales: string[] = [];
 
-                for (const lper of lpers.slice(0, 5)) {
-                    if (poolWhales.length >= 3) break; 
+                for (const lper of lpers.slice(0, MAX_LPERS_TO_SCAN)) {
+                    if (poolWhales.length >= MAX_SURVIVORS_PER_POOL) break; 
 
                     const owner = lper.owner || lper.address || lper.wallet || lper.user;
                     if (!owner) continue;
@@ -515,7 +520,7 @@ async function runDailySniper(): Promise<void> {
         }
 
         await processCategory(top24h, "Best in Last 2 Days", "Top wallets from pools < 2 days ago:");
-        await processCategory(top3to7d, "Best Older Pools (2+ Days, Ranked by 24H Volume)", "Top wallets from pools 2+ days ago (by 24h volume):");
+        await processCategory(top3to7d, `Best Older Pools (2-${MAX_POOL_AGE_DAYS} Days, Ranked by 24H Volume)`, "Top wallets from pools 2-300 days old (by 24h volume):");
 
         console.log(`\n======================================================`);
         console.log(`Market Sweep Complete.`);

@@ -7,7 +7,7 @@ An automated intelligence bot that discovers top-performing Meteora DLMM liquidi
 Once a day, the bot automatically scans the Solana Meteora DLMM ecosystem and delivers actionable whale intelligence to your Discord:
 
 - **Finds the top wallets from the 1–3 best-performing pools created in the last 24 hours**
-- **Finds the top wallets from the 1–3 best-performing pools aged 3–7 days**
+- **Finds the top wallets from the 1–3 best-performing pools aged 2–300 days**
 - **Shows a link to view each wallet on [LP Agent](https://lpagent.io)**
 - **Shows a link to follow each wallet on [Valhalla](https://valhalla.app)**
 - **Shows a link to the pool on [Meteora](https://app.meteora.ag)**
@@ -18,7 +18,7 @@ Once a day, the bot automatically scans the Solana Meteora DLMM ecosystem and de
 2. **Applies Hardcoded Pair Bans** — Skips banned pair names before any whale analysis. The current hardcoded bans are `SOL/USDC` and `CBBTC/USDC`.
 3. **Filters by Age** — Separates pools into two categories:
    - 🔥 **Fresh pools** created in the last 24 hours
-   - 📊 **Established pools** aged 3–7 days
+   - 📊 **Established pools** aged 2–300 days
 4. **Identifies Elite Whales** — For the top 3 pools in each category, it pulls the top liquidity providers and evaluates their 30-day PnL across all Meteora positions
 5. **Filters Out Losers** — Only wallets with a positive 30-day cumulative PnL survive the filter
 6. **Generates Visual Reports** — Creates a bar chart with daily PnL and a 7-day moving average via [QuickChart](https://quickchart.io)
