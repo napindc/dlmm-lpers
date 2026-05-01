@@ -15,19 +15,20 @@ Once a day, the bot automatically scans the Solana Meteora DLMM ecosystem and de
 ### How It Works
 
 1. **Discovers Hot Pools** — Fetches the top 100 Meteora DLMM pools sorted by 24h volume via the [LP Agent API](https://lpagent.io)
-2. **Filters by Age** — Separates pools into two categories:
+2. **Applies Hardcoded Pair Bans** — Skips banned pair names before any whale analysis. The current hardcoded bans are `SOL/USDC` and `CBBTC/USDC`.
+3. **Filters by Age** — Separates pools into two categories:
    - 🔥 **Fresh pools** created in the last 24 hours
    - 📊 **Established pools** aged 3–7 days
-3. **Identifies Elite Whales** — For the top 3 pools in each category, it pulls the top liquidity providers and evaluates their 30-day PnL across all Meteora positions
-4. **Filters Out Losers** — Only wallets with a positive 30-day cumulative PnL survive the filter
-5. **Generates Visual Reports** — Creates a bar chart with daily PnL and a 7-day moving average via [QuickChart](https://quickchart.io)
-6. **Posts to Discord** — Sends a rich embed to your Discord channel with:
+4. **Identifies Elite Whales** — For the top 3 pools in each category, it pulls the top liquidity providers and evaluates their 30-day PnL across all Meteora positions
+5. **Filters Out Losers** — Only wallets with a positive 30-day cumulative PnL survive the filter
+6. **Generates Visual Reports** — Creates a bar chart with daily PnL and a 7-day moving average via [QuickChart](https://quickchart.io)
+7. **Posts to Discord** — Sends a rich embed to your Discord channel with:
    - Wallet address
    - Pool name and precise age (e.g. `14h 2m`)
    - 30D cumulative PnL, 7D PnL, and daily average
    - Interactive PnL chart
    - Quick links to LP Agent, Valhalla, and the Meteora pool
-7. **Deduplicates via Redis** — Tracks posted wallets in Redis to avoid spamming Discord with duplicate reports. Entries auto-expire after 3 days.
+8. **Deduplicates via Redis** — Tracks posted wallets in Redis to avoid spamming Discord with duplicate reports. Entries auto-expire after 3 days.
 
 ## Example Discord Output
 
@@ -95,6 +96,7 @@ The bot uses Redis to remember which wallets have already been posted to avoid d
 4. Paste it into your `.env` as `REDIS_URL`
 
 Cached wallet entries auto-expire after 3 days — no maintenance needed.
+
 
 ---
 

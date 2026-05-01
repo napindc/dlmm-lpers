@@ -1,6 +1,7 @@
 const fetch = require('node-fetch');
 import * as dotenv from 'dotenv';
 import Redis from 'ioredis';
+import { getBannedPoolPairName } from './poolFilters';
 
 dotenv.config();
 
@@ -15,7 +16,6 @@ const CACHE_TTL_SECONDS = 3 * 24 * 60 * 60; // 3 days — Redis auto-expires old
 
 const SOLANA_RPC_URL: string = 'https://api.mainnet-beta.solana.com';
 const MIN_SOL_BALANCE: number = 5; // Filter out wallets with less than 5 SOL
-
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
 // Format PnL: absolute value, commas, no decimals, with up/down emoji
@@ -182,6 +182,16 @@ async function runDailySniper(): Promise<void> {
         pools = pools.filter(p => {
             const proto = (p.protocol || p.dex || p.source || p.type || "").toLowerCase();
             return !proto.includes('damm');
+        });
+
+        pools = pools.filter(p => {
+            const bannedPairName = getBannedPoolPairName(p);
+            if (bannedPairName) {
+                const poolId = p.pool || p.id || p.address || p.poolId || 'UnknownPoolID';
+                console.log(`   [!] Skipping banned pool ${bannedPairName} (${poolId}).`);
+                return false;
+            }
+            return true;
         });
 
         const now = Date.now();
