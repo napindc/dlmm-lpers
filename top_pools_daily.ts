@@ -1,8 +1,11 @@
 const fetch = require('node-fetch');
 import * as dotenv from 'dotenv';
 import Redis from 'ioredis';
+import { fmtSol } from './formatting';
 import { getBannedPoolPairName } from './poolFilters';
+import { getRuntimeMode } from './runtimeMode';
 import { MAX_LPERS_TO_SCAN, MAX_POOL_AGE_DAYS, MAX_SURVIVORS_PER_POOL, shouldScanPoolByAge } from './scanRules';
+import { computeTotalSolExposure, sumOpenPositionValueNative } from './walletExposure';
 
 dotenv.config();
 
@@ -16,7 +19,7 @@ const CACHE_PREFIX = 'dlmm:posted:';
 const CACHE_TTL_SECONDS = 3 * 24 * 60 * 60; // 3 days — Redis auto-expires old entries
 
 const SOLANA_RPC_URL: string = 'https://api.mainnet-beta.solana.com';
-const MIN_SOL_BALANCE: number = 5; // Filter out wallets with less than 5 SOL
+const MIN_SOL_BALANCE: number = 5; // Filter out wallets with less than 5 total SOL exposure
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
 // Format PnL: absolute value, commas, no decimals, with up/down emoji
@@ -129,6 +132,16 @@ interface PnlDay {
     sum_native?: number;
 }
 
+interface OpeningPositionData {
+    valueNative?: number | string | null;
+}
+
+interface WalletSolExposure {
+    nativeSol: number;
+    openLpSol: number;
+    totalSol: number;
+}
+
 async function runDailySniper(): Promise<void> {
     console.log("======================================================");
     console.log("🚀 STARTING ADVANCED DAILY POOLS SNIPER (10 RPM OPTIMIZED)");
@@ -141,6 +154,31 @@ async function runDailySniper(): Promise<void> {
     }
     async function setCachedWallet(owner: string, data: { pnl: string, pool: string, timestamp: number }): Promise<void> {
         await redis.set(`${CACHE_PREFIX}${owner}`, JSON.stringify(data), 'EX', CACHE_TTL_SECONDS);
+    }
+
+    const walletExposureCache = new Map<string, WalletSolExposure>();
+
+    async function getWalletSolExposure(owner: string): Promise<WalletSolExposure> {
+        const cachedExposure = walletExposureCache.get(owner);
+        if (cachedExposure) {
+            return cachedExposure;
+        }
+
+        const nativeSol = await getWalletSolBalance(owner);
+        let openingPositions: OpeningPositionData[] = [];
+
+        try {
+            const openingRes = await apiClient(`/lp-positions/opening?owner=${owner}&protocol=meteora`);
+            openingPositions = openingRes?.data || [];
+        } catch (e: any) {
+            console.log(`   [!] Failed to fetch open LP positions for [${owner.slice(0,8)}...]: ${e.message}`);
+        }
+
+        const openLpSol = sumOpenPositionValueNative(openingPositions);
+        const totalSol = computeTotalSolExposure(nativeSol, openingPositions);
+        const exposure = { nativeSol, openLpSol, totalSol };
+        walletExposureCache.set(owner, exposure);
+        return exposure;
     }
 
     try {
@@ -231,7 +269,7 @@ async function runDailySniper(): Promise<void> {
         // Collect whale data per category — grouped text + chart files
         let pendingPools: Map<string, {
             poolId: string; pairName: string; ageStr: string;
-            whales: { owner: string; pnl: string; pnl7d: string; avg: string; chartUrl: string; chartLabel: string }[];
+            whales: { owner: string; pnl: string; pnl7d: string; avg: string; chartUrl: string; chartLabel: string; totalSol: number }[];
         }> = new Map();
 
         async function flushEmbeds(categoryName: string) {
@@ -244,7 +282,7 @@ async function runDailySniper(): Promise<void> {
             for (const [, pool] of pendingPools) {
                 let section = `\n🎯 **[${pool.pairName}](<https://app.meteora.ag/dlmm/${pool.poolId}>)** [${pool.ageStr}]`;
                 for (const w of pool.whales) {
-                    section += `\n└ 👤 ${w.owner}`;
+                    section += `\n└ 👤 ${w.owner} · ${fmtSol(w.totalSol)} total`;
                     section += `\n\u2003 30D ${w.pnl}  ·  7D ${w.pnl7d}  ·  30D Avg Daily PnL ${w.avg}`;
                     chartEntries.push({ label: w.chartLabel, url: w.chartUrl });
                 }
@@ -360,10 +398,9 @@ async function runDailySniper(): Promise<void> {
                     const owner = lper.owner || lper.address || lper.wallet || lper.user;
                     if (!owner) continue;
 
-                    // Filter out wallets with less than 5 SOL
-                    const solBalance = await getWalletSolBalance(owner);
-                    if (solBalance < MIN_SOL_BALANCE) {
-                        console.log(`   [!] Skipped [${owner.slice(0,8)}...] -> Only ${solBalance.toFixed(2)} SOL (min: ${MIN_SOL_BALANCE}).`);
+                    const walletExposure = await getWalletSolExposure(owner);
+                    if (walletExposure.totalSol < MIN_SOL_BALANCE) {
+                        console.log(`   [!] Skipped [${owner.slice(0,8)}...] -> Only ${fmtSol(walletExposure.totalSol)} total (${fmtSol(walletExposure.nativeSol)} native + ${fmtSol(walletExposure.openLpSol)} LP, min: ${MIN_SOL_BALANCE} SOL).`);
                         continue;
                     }
 
@@ -377,7 +414,7 @@ async function runDailySniper(): Promise<void> {
                         continue;
                     }
 
-                    console.log(`   [⏳] Whale Found [${owner.slice(0,8)}...]. Fetching 30D PnL (6.5s delay)...`);
+                    console.log(`   [⏳] Whale Found [${owner.slice(0,8)}...] -> ${fmtSol(walletExposure.totalSol)} total (${fmtSol(walletExposure.nativeSol)} native + ${fmtSol(walletExposure.openLpSol)} LP). Fetching 30D PnL (6.5s delay)...`);
                     await sleep(6500);
 
                     try {
@@ -482,7 +519,7 @@ async function runDailySniper(): Promise<void> {
                             const shortLabel = `${pairName.replace(/[^a-zA-Z0-9]/g, '_')}_${owner.slice(0, 8)}`;
                             pendingPools.get(poolId)!.whales.push({
                                 owner, pnl: fmtCumulativePnl, pnl7d: fmtPnl7d, avg: fmtAvgProfit,
-                                chartUrl: chartImageUrl, chartLabel: shortLabel
+                                chartUrl: chartImageUrl, chartLabel: shortLabel, totalSol: walletExposure.totalSol
                             });
 
                             poolWhales.push(owner);
@@ -509,6 +546,8 @@ async function runDailySniper(): Promise<void> {
             await flushEmbeds(categoryName);
         }
 
+        await processCategory(top24h, "Best in Last 2 Days", "Top wallets from pools < 2 days ago:");
+
         if (WEBHOOK_URL) {
             await fetch(WEBHOOK_URL, {
                 method: 'POST',
@@ -519,7 +558,6 @@ async function runDailySniper(): Promise<void> {
             });
         }
 
-        await processCategory(top24h, "Best in Last 2 Days", "Top wallets from pools < 2 days ago:");
         await processCategory(top3to7d, `Best Older Pools (2-${MAX_POOL_AGE_DAYS} Days, Ranked by 24H Volume)`, "Top wallets from pools 2-300 days old (by 24h volume):");
 
         console.log(`\n======================================================`);
@@ -539,6 +577,14 @@ function getNextMidnightMs(): number {
 }
 
 async function main(): Promise<void> {
+    const runtimeMode = getRuntimeMode(process.env.RUN_NOW);
+
+    if (runtimeMode === 'run-now') {
+        console.log('⚡ RUN_NOW enabled. Executing immediate live sweep.');
+        await runDailySniper();
+        return;
+    }
+
     const nextMidnight = getNextMidnightMs();
     const hoursUntil = Math.round((nextMidnight - Date.now()) / 3600000);
     console.log(`🐋 Whale Sniper started. First run at: ${new Date(nextMidnight).toISOString()} (~${hoursUntil}h from now)`);

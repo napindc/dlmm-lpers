@@ -19,16 +19,18 @@ Once a day, the bot automatically scans the Solana Meteora DLMM ecosystem and de
 3. **Filters by Age** — Separates pools into two categories:
    - 🔥 **Fresh pools** created in the last 24 hours
    - 📊 **Established pools** aged 2–300 days
-4. **Identifies Elite Whales** — For the top 3 pools in each category, it pulls the top liquidity providers and evaluates their 30-day PnL across all Meteora positions
-5. **Filters Out Losers** — Only wallets with a positive 30-day cumulative PnL survive the filter
-6. **Generates Visual Reports** — Creates a bar chart with daily PnL and a 7-day moving average via [QuickChart](https://quickchart.io)
-7. **Posts to Discord** — Sends a rich embed to your Discord channel with:
+4. **Measures Wallet SOL Exposure** — Combines native SOL balance with the SOL-equivalent `valueNative` of the wallet's open Meteora LP positions
+5. **Identifies Elite Whales** — For the top 3 pools in each category, it pulls the top liquidity providers and evaluates their 30-day PnL across all Meteora positions
+6. **Filters Out Losers** — Only wallets with a positive 30-day cumulative PnL survive the filter
+7. **Generates Visual Reports** — Creates a bar chart with daily PnL and a 7-day moving average via [QuickChart](https://quickchart.io)
+8. **Posts to Discord** — Sends a rich embed to your Discord channel with:
    - Wallet address
+   - Total SOL exposure (native SOL + open LP position value)
    - Pool name and precise age (e.g. `14h 2m`)
    - 30D cumulative PnL, 7D PnL, and daily average
    - Interactive PnL chart
    - Quick links to LP Agent, Valhalla, and the Meteora pool
-8. **Deduplicates via Redis** — Tracks posted wallets in Redis to avoid spamming Discord with duplicate reports. Entries auto-expire after 3 days.
+9. **Deduplicates via Redis** — Tracks posted wallets in Redis to avoid spamming Discord with duplicate reports. Entries auto-expire after 3 days.
 
 ## Example Discord Output
 
@@ -106,6 +108,12 @@ Cached wallet entries auto-expire after 3 days — no maintenance needed.
 
 ```bash
 npx ts-node top_pools_daily.ts
+```
+
+### One-time live run right now
+
+```bash
+RUN_NOW=1 npx ts-node top_pools_daily.ts
 ```
 
 ### Automated every-2-day runs with PM2
