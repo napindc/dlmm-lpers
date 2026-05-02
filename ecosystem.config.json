@@ -17,6 +17,16 @@
       "log_file": "./logs/whale-sniper.log",
       "error_file": "./logs/whale-sniper-error.log",
       "node_args": "--max-old-space-size=1024"
+    },
+    {
+      "name": "DLMM-Dashboard",
+      "script": "npm",
+      "args": "run start",
+      "cwd": "./dashboard",
+      "env": {
+        "PORT": "3099",
+        "NODE_ENV": "production"
+      }
     }
   ]
 }
