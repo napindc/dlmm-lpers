@@ -1,6 +1,7 @@
 const fetch = require('node-fetch');
 import * as dotenv from 'dotenv';
 import Redis from 'ioredis';
+import { buildCategoryWebhookContent, buildWalletChartTitle, VALHALLA_INTRO } from './discordReport';
 import { fmtSol } from './formatting';
 import { getBannedPoolPairName } from './poolFilters';
 import { getRuntimeMode } from './runtimeMode';
@@ -272,7 +273,7 @@ async function runDailySniper(): Promise<void> {
             whales: { owner: string; pnl: string; pnl7d: string; avg: string; chartUrl: string; chartLabel: string; totalSol: number }[];
         }> = new Map();
 
-        async function flushEmbeds(categoryName: string) {
+        async function flushEmbeds(categoryName: string, introContent?: string) {
             if (pendingPools.size === 0 || !WEBHOOK_URL) return;
 
             // Build grouped text description
@@ -308,7 +309,7 @@ async function runDailySniper(): Promise<void> {
             const parts: Buffer[] = [];
 
             const payload = JSON.stringify({
-                content: `**🔍 ${categoryName}**\n${description}`
+                content: buildCategoryWebhookContent(categoryName, description, introContent)
             });
             parts.push(Buffer.from(
                 `--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${payload}\r\n`
@@ -335,7 +336,7 @@ async function runDailySniper(): Promise<void> {
             pendingPools = new Map();
         }
 
-        async function processCategory(targetPools: PoolData[], categoryName: string, summaryKey: string) {
+        async function processCategory(targetPools: PoolData[], categoryName: string, summaryKey: string, introContent?: string) {
             if (targetPools.length === 0) {
                  console.log(`\n   [!] No Meteora pools were found for "${categoryName}".`);
                  return;
@@ -456,8 +457,6 @@ async function runDailySniper(): Promise<void> {
                                 return Math.round(windowSlice.reduce((a, b) => a + b, 0) / windowSlice.length);
                             });
 
-                            const shortWalletLabel = `${owner.slice(0, 6)}..${owner.slice(-4)}`;
-
                             const quickChartObj = {
                                 type: 'bar',
                                 data: {
@@ -485,7 +484,7 @@ async function runDailySniper(): Promise<void> {
                                 options: {
                                     title: {
                                         display: true,
-                                        text: `${pairName} — ${shortWalletLabel}`,
+                                        text: buildWalletChartTitle(pairName, owner, walletExposure.totalSol),
                                         fontSize: 14
                                     },
                                     scales: {
@@ -543,20 +542,10 @@ async function runDailySniper(): Promise<void> {
             }
 
             // Flush all collected embeds for this category as ONE message
-            await flushEmbeds(categoryName);
+            await flushEmbeds(categoryName, introContent);
         }
 
-        await processCategory(top24h, "Best in Last 2 Days", "Top wallets from pools < 2 days ago:");
-
-        if (WEBHOOK_URL) {
-            await fetch(WEBHOOK_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    content: 'Below are profitable Meteora wallets you can copy trade with Valhalla! To begin just type in Discord here "/valhalla start"'
-                })
-            });
-        }
+        await processCategory(top24h, "Best in Last 2 Days", "Top wallets from pools < 2 days ago:", VALHALLA_INTRO);
 
         await processCategory(top3to7d, `Best Older Pools (2-${MAX_POOL_AGE_DAYS} Days, Ranked by 24H Volume)`, "Top wallets from pools 2-300 days old (by 24h volume):");
 
