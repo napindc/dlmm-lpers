@@ -1,12 +1,16 @@
 const fetch = require('node-fetch');
 import * as dotenv from 'dotenv';
 import Redis from 'ioredis';
+<<<<<<< HEAD
 import { buildCategoryWebhookContent, buildWalletChartTitle, VALHALLA_INTRO } from './discordReport';
 import { fmtSol } from './formatting';
 import { getBannedPoolPairName } from './poolFilters';
 import { getRuntimeMode } from './runtimeMode';
 import { MAX_LPERS_TO_SCAN, MAX_POOL_AGE_DAYS, MAX_SURVIVORS_PER_POOL, shouldScanPoolByAge } from './scanRules';
 import { computeTotalSolExposure, sumOpenPositionValueNative } from './walletExposure';
+=======
+import { WalletRatingCalculator, WalletMetrics } from './ratingCalculator';
+>>>>>>> 904644f (feat: added wallet rating index and web dashboard)
 
 dotenv.config();
 
@@ -182,6 +186,8 @@ async function runDailySniper(): Promise<void> {
         return exposure;
     }
 
+    let allDashboardWallets: any[] = [];
+
     try {
         console.log("0. Probing for active LP Agent API route...");
         const possibleUrls = [
@@ -267,14 +273,137 @@ async function runDailySniper(): Promise<void> {
             "Top wallets from pools 2-300 days old (by 24h volume):": {}
         };
 
-        // Collect whale data per category — grouped text + chart files
         let pendingPools: Map<string, {
             poolId: string; pairName: string; ageStr: string;
-            whales: { owner: string; pnl: string; pnl7d: string; avg: string; chartUrl: string; chartLabel: string; totalSol: number }[];
+            whales: { owner: string; pnl: string; pnl7d: string; avg: string; chartUrl: string; chartLabel: string; totalSol: number; metrics?: WalletMetrics; rating?: any }[];
         }> = new Map();
+
+        async function fetchWalletMetrics(owner: string, pnl30d: number, pnl7d: number, avgDaily: number): Promise<WalletMetrics> {
+            try {
+                // Use the /lp-positions/overview endpoint — returns comprehensive wallet stats
+                console.log(`   [⏳] Fetching overview metrics for [${owner.slice(0,8)}...] (6.5s delay)...`);
+                await sleep(6500);
+                const overviewRes = await apiClient(`/lp-positions/overview?owner=${owner}&protocol=meteora`);
+
+                if (overviewRes?.status === 'success' && overviewRes.data) {
+                    // API returns data as an array — grab the first element
+                    const d = Array.isArray(overviewRes.data) ? overviewRes.data[0] : overviewRes.data;
+                    if (!d) throw new Error('Empty overview data array');
+
+                    // Parse total positions
+                    const totalLp = parseInt(d.total_lp) || 0;
+                    const closedLp1M = (d.closed_lp && d.closed_lp['1M']) || 0;
+                    const closedLp7D = (d.closed_lp && d.closed_lp['7D']) || 0;
+
+                    // Parse win rates (API returns 0-1, we need 0-100)
+                    const winRateAll = ((d.win_rate?.ALL) || 0) * 100;
+                    const winRate1W = ((d.win_rate?.['7D']) || 0) * 100;
+                    const winRate1M = ((d.win_rate?.['1M']) || 0) * 100;
+                    const winRate3M = ((d.win_rate?.['3M']) || 0) * 100;
+
+                    // Parse PnL by time range
+                    const totalPnlAll = (d.total_pnl?.ALL) || 0;
+                    const totalPnl7D = (d.total_pnl?.['7D']) || 0;
+                    const totalPnl1M = (d.total_pnl?.['1M']) || 0;
+
+                    // Parse fees
+                    const totalFeeAll = (d.total_fee?.ALL) || 0;
+
+                    // Average inflow (used as proxy for avg invested)
+                    const avgInflowAll = (d.avg_inflow?.ALL) || 0;
+
+                    // Average monthly profit
+                    const avgMonthlyPnl = d.avg_monthly_pnl || 0;
+
+                    // Position age
+                    const avgAgeHour = d.avg_age_hour || 0;
+                    const avgAgeDays = avgAgeHour / 24;
+
+                    // Total pools
+                    const totalPool = parseInt(d.total_pool) || 0;
+
+                    // Last activity
+                    let lastActivityDaysAgo = 1;
+                    if (d.last_activity) {
+                        const lastMs = Date.parse(d.last_activity);
+                        if (!isNaN(lastMs)) {
+                            lastActivityDaysAgo = Math.max(0, (Date.now() - lastMs) / (24 * 60 * 60 * 1000));
+                        }
+                    }
+
+                    // Profit-per-position stability: avg_pos_profit / avg_inflow (normalized 0-1)
+                    const avgPosProfit = d.avg_pos_profit || 0;
+                    const profitStability = avgInflowAll > 0 
+                        ? Math.min(1, Math.max(0, Math.abs(avgPosProfit) / avgInflowAll)) 
+                        : 0;
+
+                    // Variance proxy: |7D pnl normalized vs 30D pnl normalized|
+                    // If 7D performance dramatically differs from 30D, variance is high
+                    const pnl7dNorm = closedLp7D > 0 ? totalPnl7D / closedLp7D : 0;
+                    const pnl1mNorm = closedLp1M > 0 ? totalPnl1M / closedLp1M : 0;
+                    const variance = pnl1mNorm !== 0 
+                        ? Math.min(1, Math.abs((pnl7dNorm - pnl1mNorm) / Math.abs(pnl1mNorm)))
+                        : 0.5;
+
+                    console.log(`   [📊] Overview: ${totalLp} positions, ${winRateAll.toFixed(1)}% WR, ${totalPool} pools, ${avgAgeDays.toFixed(1)}d avg hold`);
+
+                    return {
+                        totalPositions: totalLp,
+                        positions30D: closedLp1M,
+                        profitPerPositionStability: profitStability,
+                        variance7Dvs30D: variance,
+                        avgMonthlyProfit: avgMonthlyPnl,
+                        avgInvested: avgInflowAll,
+                        totalProfit: totalPnlAll,
+                        profit7D: totalPnl7D,
+                        profit30D: totalPnl1M,
+                        winRate1W: winRate1W,
+                        winRate1M: winRate1M,
+                        winRate3M: winRate3M,
+                        overallWinRate: winRateAll,
+                        avgPositionAgeDays: avgAgeDays,
+                        feesEarned: totalFeeAll,
+                        totalPools: totalPool,
+                        lastActivityDaysAgo: lastActivityDaysAgo
+                    };
+                }
+            } catch(e: any) {
+                console.log(`   [!] Overview endpoint failed for [${owner.slice(0,8)}...]: ${e.message}. Using revenue-based fallback.`);
+            }
+            
+            // Fallback: derive what we can from the revenue data we already have
+            return {
+                totalPositions: 80, // Unknown — assume qualifies
+                positions30D: 10,
+                profitPerPositionStability: 0.5,
+                variance7Dvs30D: 0.3,
+                avgMonthlyProfit: pnl30d,
+                avgInvested: Math.abs(pnl30d) * 2,
+                totalProfit: pnl30d * 3,
+                profit7D: pnl7d,
+                profit30D: pnl30d,
+                winRate1W: 50,
+                winRate1M: 50,
+                winRate3M: 50,
+                overallWinRate: 50,
+                avgPositionAgeDays: 2.5,
+                feesEarned: pnl30d * 0.1,
+                totalPools: 10,
+                lastActivityDaysAgo: 1
+            };
+        }
 
         async function flushEmbeds(categoryName: string, introContent?: string) {
             if (pendingPools.size === 0 || !WEBHOOK_URL) return;
+
+            // Calculate Wallet Ratings for all discovered whales in this category
+            const allMetrics: WalletMetrics[] = [];
+            for (const [, pool] of pendingPools) {
+                for (const w of pool.whales) {
+                    if (w.metrics) allMetrics.push(w.metrics);
+                }
+            }
+            const calculator = new WalletRatingCalculator(allMetrics);
 
             // Build grouped text description
             const sections: string[] = [];
@@ -283,9 +412,27 @@ async function runDailySniper(): Promise<void> {
             for (const [, pool] of pendingPools) {
                 let section = `\n🎯 **[${pool.pairName}](<https://app.meteora.ag/dlmm/${pool.poolId}>)** [${pool.ageStr}]`;
                 for (const w of pool.whales) {
-                    section += `\n└ 👤 ${w.owner} · ${fmtSol(w.totalSol)} total`;
+                    if (w.metrics) {
+                        w.rating = calculator.calculate(w.metrics);
+                    }
+                    const badgeStr = (w.rating && w.rating.isQualified) 
+                        ? `${w.rating.badge} **Rating: ${w.rating.score}**` 
+                        : `⚪ Rating: N/A`;
+
+                    section += `\n└ 👤 [${w.owner}](<https://app.lpagent.io/portfolio?address=${w.owner}>)  ·  ${fmtSol(w.totalSol)} total  ·  ${badgeStr}`;
                     section += `\n\u2003 30D ${w.pnl}  ·  7D ${w.pnl7d}  ·  30D Avg Daily PnL ${w.avg}`;
                     chartEntries.push({ label: w.chartLabel, url: w.chartUrl });
+                    
+                    allDashboardWallets.push({
+                        owner: w.owner,
+                        pool: pool.pairName,
+                        poolId: pool.poolId,
+                        metrics: w.metrics,
+                        rating: w.rating,
+                        pnl30dStr: w.pnl,
+                        pnl7dStr: w.pnl7d,
+                        avgDailyStr: w.avg
+                    });
                 }
                 sections.push(section);
             }
@@ -334,6 +481,13 @@ async function runDailySniper(): Promise<void> {
 
             console.log(`   [✅] Sent message for "${categoryName}" — ${pendingPools.size} pool(s), ${chartEntries.length} chart(s).`);
             pendingPools = new Map();
+
+            // Progressively save dashboard data so the web UI updates while the script is still running
+            if (allDashboardWallets.length > 0) {
+                console.log(`   [💾] Progressively saving ${allDashboardWallets.length} wallets to dashboard cache...`);
+                await redis.set('dlmm:dashboard:wallets', JSON.stringify(allDashboardWallets), 'EX', 7 * 24 * 60 * 60);
+                await redis.set('dlmm:dashboard:updated_at', Date.now().toString(), 'EX', 7 * 24 * 60 * 60);
+            }
         }
 
         async function processCategory(targetPools: PoolData[], categoryName: string, summaryKey: string, introContent?: string) {
@@ -511,6 +665,9 @@ async function runDailySniper(): Promise<void> {
                             const qcData: any = await qcRes.json();
                             const chartImageUrl = qcData.url || `https://quickchart.io/chart?c=${encodeURIComponent(chartString)}`;
 
+                            // Fetch wallet metrics for Rating Index calculation
+                            const metrics = await fetchWalletMetrics(owner, parseFloat(cumulativePnl), pnl7dNum, averageProfitNum);
+
                             // Queue whale under its pool for grouped output
                             if (!pendingPools.has(poolId)) {
                                 pendingPools.set(poolId, { poolId, pairName, ageStr, whales: [] });
@@ -518,7 +675,7 @@ async function runDailySniper(): Promise<void> {
                             const shortLabel = `${pairName.replace(/[^a-zA-Z0-9]/g, '_')}_${owner.slice(0, 8)}`;
                             pendingPools.get(poolId)!.whales.push({
                                 owner, pnl: fmtCumulativePnl, pnl7d: fmtPnl7d, avg: fmtAvgProfit,
-                                chartUrl: chartImageUrl, chartLabel: shortLabel, totalSol: walletExposure.totalSol
+                                chartUrl: chartImageUrl, chartLabel: shortLabel, totalSol: walletExposure.totalSol, metrics
                             });
 
                             poolWhales.push(owner);
@@ -552,6 +709,12 @@ async function runDailySniper(): Promise<void> {
         console.log(`\n======================================================`);
         console.log(`Market Sweep Complete.`);
         console.log(`======================================================\n`);
+
+        if (allDashboardWallets.length > 0) {
+            console.log(`💾 Saving ${allDashboardWallets.length} wallets to dashboard cache...`);
+            await redis.set('dlmm:dashboard:wallets', JSON.stringify(allDashboardWallets), 'EX', 7 * 24 * 60 * 60);
+            await redis.set('dlmm:dashboard:updated_at', Date.now().toString(), 'EX', 7 * 24 * 60 * 60);
+        }
 
     } catch (err: any) {
         console.error("Critical Failure in Daily Sniper:", err.message);
