@@ -1,7 +1,7 @@
 {
   "apps": [
     {
-      "name": "Elite-Whale-Sniper",
+      "name": "dlmm-lpers",
       "script": "node",
       "args": "./node_modules/ts-node/dist/bin.js ./top_pools_daily.ts",
       "cwd": "./",

@@ -5,7 +5,16 @@ import { buildCategoryWebhookContent, buildWalletChartTitle, VALHALLA_INTRO } fr
 import { fmtSol } from './formatting';
 import { getBannedPoolPairName } from './poolFilters';
 import { getRuntimeMode } from './runtimeMode';
-import { MAX_LPERS_TO_SCAN, MAX_POOL_AGE_DAYS, MAX_SURVIVORS_PER_POOL, shouldScanPoolByAge } from './scanRules';
+import {
+    FRESH_POOL_MAX_AGE_DAYS,
+    MAX_LPERS_TO_SCAN,
+    MAX_POOL_AGE_DAYS,
+    MAX_SURVIVORS_PER_POOL,
+    SCHEDULE_INTERVAL_HOURS,
+    SCHEDULE_INTERVAL_MS,
+    isFreshPoolByAge,
+    shouldScanPoolByAge
+} from './scanRules';
 import { computeTotalSolExposure, sumOpenPositionValueNative } from './walletExposure';
 
 dotenv.config();
@@ -237,8 +246,8 @@ async function runDailySniper(): Promise<void> {
         const now = Date.now();
         const dayMs = 24 * 60 * 60 * 1000;
 
-        let pools24h: PoolData[] = [];
-        let pools3to7d: PoolData[] = [];
+        let freshPools: PoolData[] = [];
+        let olderPools: PoolData[] = [];
 
         for (const p of pools) {
             let ts = p.created_at || p.createdAt || p.open_time;
@@ -251,20 +260,20 @@ async function runDailySniper(): Promise<void> {
                 continue;
             }
 
-            if (ageDays <= 2) {
-                pools24h.push({ ...p, ageDays, originalAgeMs: ms });
+            if (isFreshPoolByAge(ageDays)) {
+                freshPools.push({ ...p, ageDays, originalAgeMs: ms });
             } else {
-                pools3to7d.push({ ...p, ageDays, originalAgeMs: ms });
+                olderPools.push({ ...p, ageDays, originalAgeMs: ms });
             }
         }
 
-        const top24h = pools24h.slice(0, 3);
-        const top3to7d = pools3to7d.slice(0, 3);
+        const topFreshPools = freshPools.slice(0, 3);
+        const topOlderPools = olderPools.slice(0, 3);
         const seenWallets = new Set<string>();
         
         let fullSummaryData: Record<string, Record<string, string[]>> = {
-            "Top wallets from pools < 2 days ago:": {},
-            "Top wallets from pools 2-300 days old (by 24h volume):": {}
+            "Top wallets from pools < 3 days old:": {},
+            "Top wallets from pools 3-300 days old (by 24h volume):": {}
         };
 
         // Collect whale data per category — grouped text + chart files
@@ -545,9 +554,9 @@ async function runDailySniper(): Promise<void> {
             await flushEmbeds(categoryName, introContent);
         }
 
-        await processCategory(top24h, "Best in Last 2 Days", "Top wallets from pools < 2 days ago:", VALHALLA_INTRO);
+        await processCategory(topFreshPools, `Best in Last ${FRESH_POOL_MAX_AGE_DAYS} Days`, "Top wallets from pools < 3 days old:", VALHALLA_INTRO);
 
-        await processCategory(top3to7d, `Best Older Pools (2-${MAX_POOL_AGE_DAYS} Days, Ranked by 24H Volume)`, "Top wallets from pools 2-300 days old (by 24h volume):");
+        await processCategory(topOlderPools, `Best Older Pools (${FRESH_POOL_MAX_AGE_DAYS}-${MAX_POOL_AGE_DAYS} Days, Ranked by 24H Volume)`, "Top wallets from pools 3-300 days old (by 24h volume):");
 
         console.log(`\n======================================================`);
         console.log(`Market Sweep Complete.`);
@@ -581,8 +590,8 @@ async function main(): Promise<void> {
 
     while (true) {
         await runDailySniper();
-        console.log("⏰ Next run in 48 hours...");
-        await sleep(48 * 60 * 60 * 1000);
+        console.log(`⏰ Next run in ${SCHEDULE_INTERVAL_HOURS} hours...`);
+        await sleep(SCHEDULE_INTERVAL_MS);
     }
 }
 

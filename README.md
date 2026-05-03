@@ -4,10 +4,10 @@ An automated intelligence bot that discovers top-performing Meteora DLMM liquidi
 
 ## What It Does
 
-Once a day, the bot automatically scans the Solana Meteora DLMM ecosystem and delivers actionable whale intelligence to your Discord:
+Every 3 days, the bot automatically scans the Solana Meteora DLMM ecosystem and delivers actionable whale intelligence to your Discord:
 
-- **Finds the top wallets from the 1–3 best-performing pools created in the last 24 hours**
-- **Finds the top wallets from the 1–3 best-performing pools aged 2–300 days**
+- **First sends the top wallets from the 1–3 best-performing pools less than 3 days old**
+- **Then sends the top wallets from the 1–3 best-performing pools aged 3–300 days**
 - **Shows a link to view each wallet on [LP Agent](https://lpagent.io)**
 - **Shows a link to follow each wallet on [Valhalla](https://valhalla.app)**
 - **Shows a link to the pool on [Meteora](https://app.meteora.ag)**
@@ -17,8 +17,8 @@ Once a day, the bot automatically scans the Solana Meteora DLMM ecosystem and de
 1. **Discovers Hot Pools** — Fetches the top 100 Meteora DLMM pools sorted by 24h volume via the [LP Agent API](https://lpagent.io)
 2. **Applies Hardcoded Pair Bans** — Skips banned pair names before any whale analysis. The current hardcoded bans are `SOL/USDC` and `CBBTC/USDC`.
 3. **Filters by Age** — Separates pools into two categories:
-   - 🔥 **Fresh pools** created in the last 24 hours
-   - 📊 **Established pools** aged 2–300 days
+   - 🔥 **Fresh pools** less than 3 days old
+   - 📊 **Established pools** aged 3–300 days
 4. **Measures Wallet SOL Exposure** — Combines native SOL balance with the SOL-equivalent `valueNative` of the wallet's open Meteora LP positions
 5. **Identifies Elite Whales** — For the top 3 pools in each category, it pulls the top liquidity providers and evaluates their 30-day PnL across all Meteora positions
 6. **Filters Out Losers** — Only wallets with a positive 30-day cumulative PnL survive the filter
@@ -44,7 +44,7 @@ Each whale report includes:
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) v18 or higher
-- [PM2](https://pm2.keymetrics.io/) (for automated daily scheduling)
+- [PM2](https://pm2.keymetrics.io/) (for scheduled reports)
 - A free [LP Agent API key](https://lpagent.io)
 - A [Discord Webhook URL](https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks)
 - A [Redis instance](#redis-setup) (e.g. free tier on [Upstash](https://upstash.com))
@@ -116,9 +116,9 @@ npx ts-node top_pools_daily.ts
 RUN_NOW=1 npx ts-node top_pools_daily.ts
 ```
 
-### Automated every-2-day runs with PM2
+### Automated every-3-day runs with PM2
 
-The included `ecosystem.config.json` is pre-configured to run the script at midnight every 2 days:
+The included `ecosystem.config.json` runs the `dlmm-lpers` process continuously. In scheduled mode, the script waits until the next midnight, sends the first report for pools less than 3 days old, then runs every 3 days:
 
 ```bash
 # Install PM2 globally (if not already installed)
@@ -131,15 +131,16 @@ pm2 start ecosystem.config.json
 pm2 status
 
 # View logs
-pm2 logs Elite-Whale-Sniper
+pm2 logs dlmm-lpers
 
 # Stop the bot
-pm2 stop Elite-Whale-Sniper
+pm2 stop dlmm-lpers
 ```
 
 The PM2 config (`ecosystem.config.json`) includes:
-- **Cron schedule:** `0 0 */2 * *` (runs at midnight every 2 days)
-- **Auto-restart:** Disabled (runs once per trigger, not continuously)
+- **Process name:** `dlmm-lpers`
+- **Schedule cadence:** first run at next midnight, then every 72 hours
+- **Auto-restart:** Enabled so the scheduler restarts if the process exits unexpectedly
 - **Log files:** Saved to `./logs/` directory
 
 ---
